@@ -9,15 +9,21 @@ contract Campaign {
     uint public goal;
     uint public deadline
     address payable public owner;
+    uint initialFunding;
+    bool initialFundingReceived;
     mapping(address => uint) public pledgeAmounts;
-    uint public pendingWithdrawl;
+    uint public pendingWithdrawal;
     bool public failed;
+    bool public voteInProgress;
+    uint public requestedAmount;
 
-    constructor(uint _id, uint _goal, uint _deadline, address payable _owner) public {
+    constructor(uint _id, uint _goal, uint _deadline, address payable _owner, uint _initialFunding) public {
         id = _id;
         goal = _goal;
         deadline = _deadline;
         owner = _owner;
+        initialFunding = _initialFunding;
+        initialFundingReceived = false;
         failed = false;
         pendingWithdrawal = 0;
     }
@@ -29,8 +35,12 @@ contract Campaign {
 
     function checkFailed() public {
         require(block.timestamp >= deadline);
+        require(!initialFundingReceived);
         if(this.balance < goal) {
             failed = true;
+        } else {
+            initialFundingReceived = true;
+            pendingWithdrawal = initialFunding;
         }
     }
 
@@ -42,7 +52,14 @@ contract Campaign {
         } else if(msg.sender == owner) {
             uint amount = pendingWithdrawal;
             pendingWithdrawal = 0;
-            msg.sender.trabsfer(amount);
+            msg.sender.transfer(amount);
         }
+    }
+
+    function requestFunds(uint amount) public {
+        require(!voteInProgress);
+        require(amount < this.balance);
+        voteInProgress = true;
+        requestedFunds = amount;
     }
 }
