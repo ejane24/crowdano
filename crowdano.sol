@@ -12,10 +12,13 @@ contract Campaign {
     uint initialFunding;
     bool initialFundingReceived;
     mapping(address => uint) public pledgeAmounts;
+    mapping(address => uint) public votesCast;
     uint public pendingWithdrawal;
     bool public failed;
     bool public voteInProgress;
     uint public requestedAmount;
+    uint public voteNumber;
+    uint public voteScore;
 
     constructor(uint _id, uint _goal, uint _deadline, address payable _owner, uint _initialFunding) public {
         id = _id;
@@ -26,6 +29,7 @@ contract Campaign {
         initialFundingReceived = false;
         failed = false;
         pendingWithdrawal = 0;
+        voteNumber = 0;
     }
 
     function support() public payable {
@@ -59,7 +63,21 @@ contract Campaign {
     function requestFunds(uint amount) public {
         require(!voteInProgress);
         require(amount < this.balance);
+        voteNumber += 1;
         voteInProgress = true;
         requestedFunds = amount;
+        voteScore = 0;
+    }
+
+    function castVote(bool approve) {
+        require(voteInProgress);
+        require(pledgeAmounts[msg.sender] != 0);
+        require(votesCast[address] < voteNumber);
+        votesCast[address] += 1;
+        if(approve) {
+            voteScore += pledgeAmounts[msg.sender];
+        } else {
+            voteScore -= pledgeAmounts[msg.sender];
+        }
     }
 }
