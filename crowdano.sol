@@ -1,4 +1,8 @@
 //License: CC BY-NC-SA
+
+//This smart-contract is not complete. 
+//All functions are subject to change.
+
 pragma solidity ^0.7.0;
 
 contract Crowdano {
