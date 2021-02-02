@@ -76,11 +76,12 @@ The platform is aimed to be complete in 6 months from the start of development. 
 
 Once deployed, the platform aims to have at least 50 campaigns active in the first 6 months with this number growing rapidly into the future.
 
-##Feedback
+## Feedback
 If you have any feedback regarding this proposal or the project in general, please do not hesitate to ask or suggest anything. I am always open to feedback!
 
  
 
-References
+## References
 [1] https://www.entrepreneur.com/article/329995
+
 [2] https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2088298&http://papers.ssrn.com/sol3/papers.cfm?abstract_id=2088298
