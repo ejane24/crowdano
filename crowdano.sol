@@ -6,7 +6,17 @@
 pragma solidity ^0.7.0;
 
 contract Crowdano {
+    Campaign[] public campaigns;
+    
+    event CampaignCreated(address campaignAddress, uint id);
 
+    function createCampaign(uint _goal, uint _deadline, address payable _owner, uint _initialFunding) public returns(address campaignAddress, uint id) {
+        uint _id = campaigns.length;
+        Campaign campaign = new Campaign(_id, _goal, _deadline, _owner _initialFunding);
+        campaigns.push(campaign);
+        emit CampaignCreated(address(campaign), _id);
+        return (address(campaign), _id);
+    }
 }
 
 contract Campaign {
