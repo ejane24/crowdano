@@ -51,4 +51,10 @@ mkCampaign deadline target ownerWallet initialFunding =
         campaignInitialFunding = initialFunding
         }
 
+mkValidator :: Campaign -> PubKeyHash -> CampaignAction -> ValidatorCtx -> Bool
+mkValidator c con act p = case act of
+    StartVote -> validStartVote c (valCtxTxInfo p)
+    Vote -> validVote c con (valCtxTxInfo p)
+    Collect -> validCollection c (valCtxTxInfo p)
+    Refund -> validRefund c con (valCtxTxInfo p)
 
