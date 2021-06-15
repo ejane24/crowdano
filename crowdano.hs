@@ -15,27 +15,17 @@ data Campaign = Campaign {
 
 PlutusTx.makeLift ''Campaign
 
-data CampaignAction = StartVote | Vote | Collect | Contribute
+data CampaignAction = ScheduleCollection | Contribute
 
-PlutusTx.makeIsData ''CampaignAction
+PlutusTx.unstableMakeIsData ''CampaignAction
 PlutusTx.makeLift ''CampaignAction 
 
 type CrowdfundingSchema = 
     BlockchainActions
         .\/ Endpoint "Start Vote" Request
         .\/ Endpoint "Vote" Vote
-        .\/ Endpoint "Collect"
+        .\/ Endpoint "Schedule Collection" ()
         .\/ Endpoint "Contribute" Contribution
-
-newtype Request = Request {
-    requestAmount :: Value
-    } deriving stock (Haskell.Eq, Show, Generic)
-      deriving anyclass (ToJSON, FromJSON, IotsType, ToSchema, ToArgument)
-
-newtype Vote = Vote {
-    voteInFavour :: Bool
-    } deriving stock (Haskell.Eq, Show, Generic)
-      deriving anyclass (ToJSON, FromJSON, IotsType, ToSchema, ToArgument)
 
 newtype Contribution = Contribution {
     contribValue :: Value
@@ -51,10 +41,42 @@ mkCampaign deadline target ownerWallet initialFunding =
         campaignInitialFunding = initialFunding
         }
 
-mkValidator :: Campaign -> PubKeyHash -> CampaignAction -> ValidatorCtx -> Bool
-mkValidator c con act p = case act of
-    StartVote -> validStartVote c (valCtxTxInfo p)
-    Vote -> validVote c con (valCtxTxInfo p)
-    Collect -> validCollection c (valCtxTxInfo p)
-    Refund -> validRefund c con (valCtxTxInfo p)
+data Crowdfunding
+instance Scripts.ValidatorTypes Crowdfunding where
+    type instance RedeemerType Crowdfunding = CampaignAction
+    type instance DatumType Crowdfunding = PubKeyHash
 
+typedValidator :: Campaign -> Scripts.TypedValidator Crowdfunding
+typedValidator = Scripts.mkTypedValidatorParam @Crowdfunding
+    $$(PlutusTx.compile [|| mkValidator ||])
+    $$(PlutusTx.compile [|| wrap ||])
+    where
+        wrap = Scripts.wrapValidator
+
+{-# INLINABLE validRefund #-}
+validRefund :: Campaign -> PubKeyHash -> TxInfo -> Bool
+validRefund campaign contributor txinfo =
+    -- Check that the transaction falls in the refund range of the campaign
+    Interval.contains (refundRange campaign) (TimeSlot.posixTimeRangeToSlotRange $ txInfoValidRange txinfo)
+    -- Check that the transaction is signed by the contributor
+    && (txinfo `V.txSignedBy` contributor)
+
+{-# INLINABLE validCollection #-}
+validCollection :: Campaign -> TxInfo -> Bool
+validCollection campaign txinfo =
+    -- Check that the transaction falls in the collection range of the campaign
+    (collectionRange campaign `Interval.contains` TimeSlot.posixTimeRangeToSlotRange (txInfoValidRange txinfo))
+    -- Check that the transaction is signed by the campaign owner
+    && (txinfo `V.txSignedBy` campaignOwner campaign)
+
+{-# INLINABLE mkValidator #-}
+mkValidator :: Campaign -> PubKeyHash -> CampaignAction -> ScriptContext -> Bool
+mkValidator c con act ScriptContext{scriptContextTxInfo} = case act of
+    ScheduleCollection -> validCollection c scriptContextTxInfo
+    Contribute -> validContribution c con scriptContextTxInfo
+
+contributionScript :: Campaign -> Validator
+contributionScript = Scripts.validatorScript . typedValidator
+
+campaignAddress :: Campaign -> Ledger.ValidatorHash
+campaignAddress = Scripts.validatorHash . contributionScript
