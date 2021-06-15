@@ -71,8 +71,6 @@ PlutusTx.makeLift ''CampaignAction
 
 type CrowdfundingSchema = 
     BlockchainActions
-        .\/ Endpoint "Start Vote" Request
-        .\/ Endpoint "Vote" Vote
         .\/ Endpoint "Schedule Collection" ()
         .\/ Endpoint "Contribute" Contribution
 
