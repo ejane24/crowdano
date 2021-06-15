@@ -81,14 +81,25 @@ newtype Contribution = Contribution {
     } deriving stock (Haskell.Eq, Show, Generic)
       deriving anyclass (ToJSON, FromJSON, IotsType, ToSchema, ToArgument)
 
-mkCampaign :: Slot -> Value -> Wallet -> Value -> Campaign
-mkCampaign deadline target ownerWallet initialFunding = 
+mkCampaign :: Slot -> Slot -> Value -> Wallet -> Value -> Campaign
+mkCampaign deadline collectionDeadline, target ownerWallet initialFunding = 
     Campaign {
         campaignDeadline = deadline,
+        campaignCollectionDeadline = collectionDeadline,
         campaignTarget = target,
         campaignOwner = PubKeyHash $ Emulator.walletPubKey ownerWallet,
         campaignInitialFunding = initialFunding
         }
+
+{-# INLINABLE collectionRange #-}
+collectionRange :: Campaign -> SlotRange
+collectionRange cmp =
+    Interval.interval (campaignDeadline cmp) (campaignCollectionDeadline cmp)
+
+{-# INLINABLE refundRange #-}
+refundRange :: Campaign -> SlotRange
+refundRange cmp =
+    Interval.from (campaignCollectionDeadline cmp)
 
 data Crowdfunding
 instance Scripts.ValidatorTypes Crowdfunding where
@@ -105,17 +116,14 @@ typedValidator = Scripts.mkTypedValidatorParam @Crowdfunding
 {-# INLINABLE validRefund #-}
 validRefund :: Campaign -> PubKeyHash -> TxInfo -> Bool
 validRefund campaign contributor txinfo =
-    -- Check that the transaction falls in the refund range of the campaign
     Interval.contains (refundRange campaign) (TimeSlot.posixTimeRangeToSlotRange $ txInfoValidRange txinfo)
-    -- Check that the transaction is signed by the contributor
     && (txinfo `V.txSignedBy` contributor)
 
 {-# INLINABLE validCollection #-}
 validCollection :: Campaign -> TxInfo -> Bool
 validCollection campaign txinfo =
-    -- Check that the transaction falls in the collection range of the campaign
     (collectionRange campaign `Interval.contains` TimeSlot.posixTimeRangeToSlotRange (txInfoValidRange txinfo))
-    -- Check that the transaction is signed by the campaign owner
+    && (valueSpent txinfo `Value.geq` campaignTarget campaign)
     && (txinfo `V.txSignedBy` campaignOwner campaign)
 
 {-# INLINABLE mkValidator #-}
@@ -129,3 +137,43 @@ contributionScript = Scripts.validatorScript . typedValidator
 
 campaignAddress :: Campaign -> Ledger.ValidatorHash
 campaignAddress = Scripts.validatorHash . contributionScript
+
+contribute :: Campaign -> Contract () CrowdfundingSchema ContractError ()
+contribute cmp = do
+    Contribution{contribValue} <- endpoint @"contribute"
+    logInfo @Text $ "Contributing " <> Text.pack (Haskell.show contribValue)
+    contributor <- ownPubKey
+    let inst = typedValidator cmp
+        tx = Constraints.mustPayToTheScript (pubKeyHash contributor) contribValue
+                <> Constraints.mustValidateIn (Ledger.interval 1 (campaignDeadline cmp))
+    txid <- fmap txId (submitTxConstraints inst tx)
+
+    utxo <- watchAddressUntil (Scripts.validatorAddress inst) (campaignCollectionDeadline cmp)
+
+    let flt Ledger.TxOutRef{txOutRefId} _ = txid Haskell.== txOutRefId
+        tx' = Typed.collectFromScriptFilter flt utxo Refund
+                <> Constraints.mustValidateIn (refundRange cmp)
+                <> Constraints.mustBeSignedBy (pubKeyHash contributor)
+    if Constraints.modifiesUtxoSet tx'
+    then do
+        logInfo @Text "Claiming refund"
+        void (submitTxConstraintsSpending inst utxo tx')
+    else pure ()
+
+scheduleCollection :: Campaign -> Contract () CrowdfundingSchema ContractError ()
+scheduleCollection cmp = do
+    let inst = typedValidator cmp
+
+    () <- endpoint @"schedule collection"
+    logInfo @Text "Campaign started. Waiting for campaign deadline to collect funds."
+
+    _ <- awaitSlot (campaignDeadline cmp)
+    unspentOutputs <- utxoAt (Scripts.validatorAddress inst)
+
+    let tx = Typed.collectFromScript unspentOutputs Collect
+            <> Constraints.mustValidateIn (collectionRange cmp)
+
+    logInfo @Text "Collecting funds"
+    void $ submitTxConstraintsSpending inst unspentOutputs tx
+
+
