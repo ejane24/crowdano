@@ -1,10 +1,59 @@
 -- License: CC-BY-NC-SA
 -- Crowdano plutus smart contract
 
-module Crowdano where
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE DeriveAnyClass      #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE DerivingStrategies  #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE NamedFieldPuns      #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
+{-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE ViewPatterns        #-}
+{-# OPTIONS_GHC -fno-ignore-interface-pragmas #-}
+{-# OPTIONS_GHC -fno-omit-interface-pragmas #-}
+{-# OPTIONS_GHC -fno-specialise #-}
+{-# OPTIONS_GHC -fno-strictness #-}
+{-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:debug-context #-}
 
-import qualified Language.PlutusTx as PlutusTx
-import Ledger
+import           Control.Applicative      (Applicative (..))
+import           Control.Monad            (void)
+import           Data.Aeson               (FromJSON, ToJSON)
+import           Data.Text                (Text)
+import qualified Data.Text                as Text
+import           GHC.Generics             (Generic)
+
+import           Ledger                   (PubKeyHash, Slot, SlotRange, Validator, txId)
+import qualified Ledger
+import qualified Ledger.Ada               as Ada
+import qualified Ledger.Constraints       as Constraints
+import           Ledger.Contexts          as V
+import qualified Ledger.Interval          as Interval
+import qualified Ledger.Scripts           as Scripts
+import qualified Ledger.TimeSlot          as TimeSlot
+import qualified Ledger.Typed.Scripts     as Scripts hiding (validatorHash)
+import           Ledger.Value             (Value)
+import           Plutus.Contract
+import qualified Plutus.Contract.Typed.Tx as Typed
+import           Plutus.Trace.Emulator    (ContractHandle, EmulatorTrace)
+import qualified Plutus.Trace.Emulator    as Trace
+import qualified PlutusTx
+import           PlutusTx.Prelude         hiding (Applicative (..), Semigroup (..), return, (<$>), (>>), (>>=))
+import           Prelude                  (Semigroup (..))
+import qualified Prelude                  as Haskell
+import           Schema                   (ToArgument, ToSchema)
+import           Wallet.Emulator          (Wallet (..))
+import qualified Wallet.Emulator          as Emulator
+
+
+module Crowdano where
 
 data Campaign = Campaign {
     campignDeadline :: Slot,
