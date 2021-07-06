@@ -1,10 +1,3 @@
--- Crowdfunding contract implemented using the [[Plutus]] interface.
--- This is the fully parallel version that collects all contributions
--- in a single transaction.
---
--- Note [Transactions in the crowdfunding campaign] explains the structure of
--- this contract on the blockchain.
-
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DeriveAnyClass        #-}
 {-# LANGUAGE DeriveGeneric         #-}
