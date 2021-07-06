@@ -1,5 +1,22 @@
--- License: CC-BY-NC-SA
--- Crowdano plutus smart contract
+-- Crowdfunding contract implemented using the [[Plutus]] interface.
+-- This is the fully parallel version that collects all contributions
+-- in a single transaction.
+--
+-- Note [Transactions in the crowdfunding campaign] explains the structure of
+-- this contract on the blockchain.
+
+{-# LANGUAGE DataKinds             #-}
+{-# LANGUAGE DeriveAnyClass        #-}
+{-# LANGUAGE DeriveGeneric         #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NoImplicitPrelude     #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE TypeFamilies          #-}
+{-# LANGUAGE TypeOperators         #-}
 
 import           Control.Applicative         (Applicative (pure))
 import           Control.Monad               (void)
@@ -19,10 +36,12 @@ import           Plutus.Contract             as Contract
 import qualified Plutus.Contract.Constraints as Constraints
 import qualified Plutus.Contract.Typed.Tx    as Typed
 import qualified PlutusTx                    as PlutusTx
-import           PlutusTx.Prelude            hiding (Applicative (..), Semigroup (..))
-import           Prelude                     (Semigroup (..))
+import           PlutusTx.Prelude            hiding (Applicative (..), Semigroup (..), (<$>))
+import           Prelude                     (Semigroup (..), (<$>))
 import qualified Prelude                     as Haskell
 import qualified Wallet.Emulator             as Emulator
+import qualified Data.Map                    as Map
+import           Data.Text                   (Text)
 
 data Campaign = Campaign
     { campaignDeadline           :: Slot
@@ -112,13 +131,13 @@ contribute = do
     Contribution{cmpDeadline, cmpTarget, cmpCollectionDeadline, cmpOwner, contribValue} <- endpoint @"contribute"
     let cmp = mkCampaign cmpDeadline cmpTarget cmpCollectionDeadline cmpOwner
     contributor <- pubKeyHash <$> ownPubKey
-    Contract.logInfo (cmp)
     let inst = scriptInstance cmp
         tx = Constraints.mustPayToTheScript contributor contribValue
                 <> Constraints.mustValidateIn (Ledger.interval 1 (campaignDeadline cmp))
     txid <- fmap txId (submitTxConstraints inst tx)
 
     utxo <- watchAddressUntil (Scripts.scriptAddress inst) (campaignCollectionDeadline cmp)
+
 
     let flt Ledger.TxOutRef{txOutRefId} _ = txid Haskell.== txOutRefId
         tx' = Typed.collectFromScriptFilter flt utxo Refund
@@ -128,17 +147,25 @@ contribute = do
     then void (submitTxConstraintsSpending inst utxo tx')
     else pure ()
 
+ownFunds :: AsContractError e => Campaign -> Contract () CrowdfundingSchema e Value
+ownFunds cmp = do
+    let inst = scriptInstance cmp
+    utxos <- utxoAt (Scripts.scriptAddress inst)
+    let v = mconcat $ Map.elems $ V.txOutValue . Ledger.txOutTxOut <$> utxos
+    return v
+
 scheduleCollection :: AsContractError e => Contract () CrowdfundingSchema e ()
 scheduleCollection = do
     cmp <- endpoint @"schedule collection"
     let inst = scriptInstance cmp
-    
-
     _ <- awaitSlot (campaignDeadline cmp)
     unspentOutputs <- utxoAt (Scripts.scriptAddress inst)
-    Contract.logInfo (cmp)
-    
+    v <- ownFunds cmp
+    let fee = (Ada.divide (Ada.fromValue v) 100) * 2
+
     let tx = Typed.collectFromScript unspentOutputs Collect
+            <> Constraints.mustPayToPubKey (campaignOwner cmp) (v - (Ada.toValue fee))
+            <> Constraints.mustPayToPubKey (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet 3)) (Ada.toValue fee)
             <> Constraints.mustValidateIn (collectionRange cmp)
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
@@ -148,5 +175,3 @@ endpoints = crowdfunding
 mkSchemaDefinitions ''CrowdfundingSchema
 
 $(mkKnownCurrencies [])
-
-
