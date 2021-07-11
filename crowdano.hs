@@ -41,6 +41,7 @@ data Campaign = Campaign
     , campaignTarget             :: Value
     , campaignCollectionDeadline :: Slot
     , campaignOwner              :: PubKeyHash
+    , initialFunding             :: Value
     } deriving (Generic, ToJSON, FromJSON, ToSchema)
 
 PlutusTx.makeLift ''Campaign
@@ -60,17 +61,19 @@ data Contribution = Contribution
         , cmpTarget             :: Value
         , cmpCollectionDeadline :: Slot
         , cmpOwner              :: PubKeyHash
+        , initFunding           :: Value
         , contribValue               :: Value
         } deriving stock (Haskell.Eq, Show, Generic)
           deriving anyclass (ToJSON, FromJSON, ToSchema)
 
-mkCampaign :: Slot -> Value -> Slot -> PubKeyHash -> Campaign
-mkCampaign ddl target collectionDdl ownerPubKeyHash =
+mkCampaign :: Slot -> Value -> Slot -> PubKeyHash -> Value -> Campaign
+mkCampaign ddl target collectionDdl ownerPubKeyHash initFundingAmt =
     Campaign
         { campaignDeadline = ddl
         , campaignTarget   = target
         , campaignCollectionDeadline = collectionDdl
         , campaignOwner = ownerPubKeyHash
+        , initialFunding = initFundingAmt
         }
 
 collectionRange :: Campaign -> SlotRange
@@ -121,8 +124,8 @@ crowdfunding = contribute `select` scheduleCollection
 
 contribute :: AsContractError e => Contract () CrowdfundingSchema e ()
 contribute = do
-    Contribution{cmpDeadline, cmpTarget, cmpCollectionDeadline, cmpOwner, contribValue} <- endpoint @"contribute"
-    let cmp = mkCampaign cmpDeadline cmpTarget cmpCollectionDeadline cmpOwner
+    Contribution{cmpDeadline, cmpTarget, cmpCollectionDeadline, cmpOwner, initFunding, contribValue} <- endpoint @"contribute"
+    let cmp = mkCampaign cmpDeadline cmpTarget cmpCollectionDeadline cmpOwner initFunding
     contributor <- pubKeyHash <$> ownPubKey
     let inst = scriptInstance cmp
         tx = Constraints.mustPayToTheScript contributor contribValue
@@ -147,6 +150,7 @@ ownFunds cmp = do
     let v = mconcat $ Map.elems $ V.txOutValue . Ledger.txOutTxOut <$> utxos
     return v
 
+
 scheduleCollection :: AsContractError e => Contract () CrowdfundingSchema e ()
 scheduleCollection = do
     cmp <- endpoint @"schedule collection"
@@ -157,8 +161,9 @@ scheduleCollection = do
     let fee = (Ada.divide (Ada.fromValue v) 100) * 2
 
     let tx = Typed.collectFromScript unspentOutputs Collect
-            <> Constraints.mustPayToPubKey (campaignOwner cmp) (v - (Ada.toValue fee))
+            <> Constraints.mustPayToPubKey (campaignOwner cmp) (initialFunding cmp)
             <> Constraints.mustPayToPubKey (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet 3)) (Ada.toValue fee)
+            <> Constraints.mustPayToTheScript (campaignOwner cmp) (v - ((initialFunding cmp) + (Ada.toValue fee)))
             <> Constraints.mustValidateIn (collectionRange cmp)
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
