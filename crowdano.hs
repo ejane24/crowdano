@@ -11,30 +11,31 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 
-import           Control.Applicative         (Applicative (pure))
-import           Control.Monad               (void)
-import           Ledger                      (PubKeyHash, ScriptContext (..), TxInfo (..), Validator, pubKeyHash, txId,
-                                              valueSpent)
-import qualified Ledger                      as Ledger
-import qualified Ledger.Ada                  as Ada
-import qualified Ledger.Contexts             as V
-import qualified Ledger.Interval             as Interval
-import qualified Ledger.Scripts              as Scripts
-import           Ledger.Slot                 (Slot, SlotRange)
-import qualified Ledger.Typed.Scripts        as Scripts
-import           Ledger.Value                (Value)
-import qualified Ledger.Value                as Value
-import           Playground.Contract
-import           Plutus.Contract             as Contract
-import qualified Plutus.Contract.Constraints as Constraints
+import           Control.Monad        hiding (fmap)
+import           Data.Aeson           (ToJSON, FromJSON)
+import           Data.Map             as Map
+import           Data.Text            (Text)
+import           Data.Void            (Void)
+import           GHC.Generics         (Generic)
+import qualified Ledger.Interval      as Interval
+import qualified Prelude              as Haskell
+import           Plutus.Contract
+import           PlutusTx             (Data (..))
+import qualified PlutusTx
+import           PlutusTx.Prelude     hiding (Semigroup(..), unless)
+import           Ledger               hiding (singleton)
+import           Ledger.Constraints   as Constraints
+import qualified Ledger.Typed.Scripts as Scripts
+import           Ledger.Ada           as Ada
+import           Ledger.Value         (Value)
+import qualified Ledger.Value         as Value
+import           Playground.Contract  (printJson, printSchemas, ensureKnownCurrencies, stage, ToSchema)
 import qualified Plutus.Contract.Typed.Tx    as Typed
-import qualified PlutusTx                    as PlutusTx
-import           PlutusTx.Prelude            hiding (Applicative (..), Semigroup (..), (<$>))
-import           Prelude                     (Semigroup (..), (<$>))
-import qualified Prelude                     as Haskell
-import qualified Wallet.Emulator             as Emulator
-import qualified Data.Map                    as Map
-import           Data.Text                   (Text)
+import           Playground.TH        (mkKnownCurrencies, mkSchemaDefinitions)
+import           Playground.Types     (KnownCurrency (..))
+import           Prelude              (IO, Semigroup (..), Show (..), String, Int)
+import           Text.Printf          (printf)
+import qualified Wallet.Emulator      as Emulator
 
 data Campaign = Campaign
     { campaignDeadline           :: Slot
@@ -42,7 +43,7 @@ data Campaign = Campaign
     , campaignCollectionDeadline :: Slot
     , campaignOwner              :: PubKeyHash
     , initialFunding             :: Value
-    } deriving (Generic, ToJSON, FromJSON, ToSchema)
+    } deriving (Generic, ToJSON, FromJSON)
 
 PlutusTx.makeLift ''Campaign
 
@@ -52,8 +53,7 @@ PlutusTx.unstableMakeIsData ''CampaignAction
 PlutusTx.makeLift ''CampaignAction
 
 type CrowdfundingSchema =
-    BlockchainActions
-        .\/ Endpoint "schedule collection" Campaign
+    Endpoint "schedule collection" Campaign
         .\/ Endpoint "contribute" Contribution
 
 data Contribution = Contribution
@@ -64,7 +64,13 @@ data Contribution = Contribution
         , initFunding           :: Value
         , contribValue               :: Value
         } deriving stock (Haskell.Eq, Show, Generic)
-          deriving anyclass (ToJSON, FromJSON, ToSchema)
+          deriving anyclass (ToJSON, FromJSON)
+
+data ContribData = ContribData
+        { contributors :: [String]
+        }
+
+PlutusTx.makeLift ''ContribData
 
 mkCampaign :: Slot -> Value -> Slot -> PubKeyHash -> Value -> Campaign
 mkCampaign ddl target collectionDdl ownerPubKeyHash initFundingAmt =
@@ -85,28 +91,28 @@ refundRange cmp =
     Interval.from (campaignCollectionDeadline cmp)
 
 data Crowdfunding
-instance Scripts.ScriptType Crowdfunding where
+instance Scripts.ValidatorTypes Crowdfunding where
     type instance RedeemerType Crowdfunding = CampaignAction
     type instance DatumType Crowdfunding = PubKeyHash
 
-scriptInstance :: Campaign -> Scripts.ScriptInstance Crowdfunding
-scriptInstance = Scripts.validatorParam @Crowdfunding
-    $$(PlutusTx.compile [|| mkValidator ||])
+scriptInstance :: Campaign -> Scripts.TypedValidator Crowdfunding
+scriptInstance cmp = Scripts.mkTypedValidator @Crowdfunding
+    ($$(PlutusTx.compile [|| mkValidator ||]) `PlutusTx.applyCode` PlutusTx.liftCode cmp)
     $$(PlutusTx.compile [|| wrap ||])
     where
-        wrap = Scripts.wrapValidator
+        wrap = Scripts.wrapValidator @CampaignAction @PubKeyHash
 
 {-# INLINABLE validRefund #-}
 validRefund :: Campaign -> PubKeyHash -> TxInfo -> Bool
 validRefund campaign contributor txinfo =
     traceIfFalse "Invalid slot" (Interval.contains (refundRange campaign) (txInfoValidRange txinfo))
-    && traceIfFalse "Not signed by contributor" (txinfo `V.txSignedBy` contributor)
+    && traceIfFalse "Not signed by contributor" (txinfo `txSignedBy` contributor)
 
 validCollection :: Campaign -> TxInfo -> Bool
 validCollection campaign txinfo =
     traceIfFalse "Invalid Range" (collectionRange campaign `Interval.contains` txInfoValidRange txinfo)
     && traceIfFalse "Target not reached" (valueSpent txinfo `Value.geq` campaignTarget campaign)
-    && traceIfFalse "Not Owner" (txinfo `V.txSignedBy` campaignOwner campaign)
+    && traceIfFalse "Not Owner" (txinfo `txSignedBy` campaignOwner campaign)
 
 mkValidator :: Campaign -> PubKeyHash -> CampaignAction -> ScriptContext -> Bool
 mkValidator c con act p = case act of
@@ -132,7 +138,7 @@ contribute = do
                 <> Constraints.mustValidateIn (Ledger.interval 1 (campaignDeadline cmp))
     txid <- fmap txId (submitTxConstraints inst tx)
 
-    utxo <- watchAddressUntil (Scripts.scriptAddress inst) (campaignCollectionDeadline cmp)
+    utxo <- watchAddressUntil (scriptAddress inst) (campaignCollectionDeadline cmp)
 
 
     let flt Ledger.TxOutRef{txOutRefId} _ = txid Haskell.== txOutRefId
@@ -146,18 +152,34 @@ contribute = do
 ownFunds :: AsContractError e => Campaign -> Contract () CrowdfundingSchema e Value
 ownFunds cmp = do
     let inst = scriptInstance cmp
-    utxos <- utxoAt (Scripts.scriptAddress inst)
-    let v = mconcat $ Map.elems $ V.txOutValue . Ledger.txOutTxOut <$> utxos
+    utxos <- utxoAt (scriptAddress inst)
+    let v = mconcat $ Map.elems $ txOutValue . Ledger.txOutTxOut <$> utxos
     return v
 
+getContributors :: AsContractError e => Campaign -> Contract () CrowdfundingSchema e ContribData
+getContributors cmp = do
+    let inst = scriptInstance cmp
+    utxos <- utxoAt (scriptAddress inst)
+    let outputs = Map.elems $ Ledger.txOutputs . Ledger.txOutTxTx <$> utxos
+        a = Map.map (Map.map Ledger.txOutAddress) (outputs)
+        b = Map.map (Map.map Ledger.addressCredential) a
+        c = Map.map (Map.map (substring 17 . show)) b
+        d = Map.map (!! 0) c
+        contribs = ContribData{contributors = d}
+    return contribs
+
+substring :: Int -> String -> String
+substring i s = ( drop i s )
 
 scheduleCollection :: AsContractError e => Contract () CrowdfundingSchema e ()
 scheduleCollection = do
     cmp <- endpoint @"schedule collection"
     let inst = scriptInstance cmp
     _ <- awaitSlot (campaignDeadline cmp)
-    unspentOutputs <- utxoAt (Scripts.scriptAddress inst)
+    unspentOutputs <- utxoAt (scriptAddress inst)
+    getContributors cmp
     v <- ownFunds cmp
+    contribs <- getContributors cmp
     let fee = (Ada.divide (Ada.fromValue v) 100) * 2
 
     let tx = Typed.collectFromScript unspentOutputs Collect
@@ -165,6 +187,7 @@ scheduleCollection = do
             <> Constraints.mustPayToPubKey (pubKeyHash $ Emulator.walletPubKey (Emulator.Wallet 3)) (Ada.toValue fee)
             <> Constraints.mustPayToTheScript (campaignOwner cmp) (v - ((initialFunding cmp) + (Ada.toValue fee)))
             <> Constraints.mustValidateIn (collectionRange cmp)
+            <> Constraints.mustIncludeDatum (Datum $ PlutusTx.toBuiltinData $ ContribData)
     void $ submitTxConstraintsSpending inst unspentOutputs tx
 
 endpoints :: AsContractError e => Contract () CrowdfundingSchema e ()
